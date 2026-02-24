@@ -1,0 +1,164 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Cricket Database PostgreSQL API",
+        "version": "1.0.0",
+        "description": "API for connecting to a PostgreSQL database using SQLAlchemy. This API allows executing PostgreSQL-compliant SQL queries based on user questions. Results reflect actual query execution. Do not fabricate data."
+    },
+    "servers": [
+        {
+            "url": "https://supabase.tigzig.com",
+            "description": "Main API server"
+        }
+    ],
+    "paths": {
+        "/sqlquery_alchemy/": {
+            "get": {
+                "summary": "Execute PostgreSQL Query using SQLAlchemy",
+                "operationId": "execute_sqlalchemy_query",
+                "description": "Execute a PostgreSQL-compliant SQL query using SQLAlchemy and return the results. The response includes the query results directly.",
+                "parameters": [
+                    {
+                        "name": "sqlquery",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uri-component"
+                        },
+                        "description": "PostgreSQL-compliant SQL query string generated from the user's question. Ensure proper URI encoding for special characters."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "oneOf": [
+                                        {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "additionalProperties": true
+                                            },
+                                            "description": "Query results for SELECT statements"
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "status": {
+                                                    "type": "string",
+                                                    "example": "success"
+                                                },
+                                                "message": {
+                                                    "type": "string",
+                                                    "example": "Query executed successfully"
+                                                }
+                                            },
+                                            "required": ["status", "message"],
+                                            "description": "Status response for non-SELECT statements"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid API Key",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "detail": {
+                                            "type": "string",
+                                            "example": "Invalid API key"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Database Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "detail": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ]
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "HTTPValidationError": {
+                "title": "HTTP Validation Error",
+                "type": "object",
+                "properties": {
+                    "detail": {
+                        "title": "Detail",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ValidationError"
+                        }
+                    }
+                }
+            },
+            "ValidationError": {
+                "title": "Validation Error",
+                "required": ["loc", "msg", "type"],
+                "type": "object",
+                "properties": {
+                    "loc": {
+                        "title": "Location",
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "msg": {
+                        "title": "Message",
+                        "type": "string"
+                    },
+                    "type": {
+                        "title": "Error Type",
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "securitySchemes": {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "API_KEY",
+                "description": "API Key authentication using a Bearer token. Provide your API key in the Authorization header as 'Bearer YOUR_API_KEY'. Example: Authorization: Bearer YOUR_API_KEY"
+            }
+        }
+    }
+}
