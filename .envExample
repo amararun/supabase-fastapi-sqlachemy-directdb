@@ -1,0 +1,16 @@
+# PostgreSQL connection string (required)
+DATABASE_URL=postgresql://user:password@host:port/dbname
+
+# API key for Bearer authentication (required)
+REX_API_KEY=your-api-key-here
+
+# Rate limiting (defaults shown)
+RATE_LIMIT=30/minute
+GLOBAL_RATE_LIMIT=200/minute
+
+# Concurrency limits (defaults shown)
+MAX_CONCURRENT_PER_IP=3
+MAX_CONCURRENT_GLOBAL=6
+
+# Max rows returned per query (default: 1000)
+MAX_ROWS=1000
