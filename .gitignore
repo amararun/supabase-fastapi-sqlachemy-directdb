@@ -1,0 +1,11 @@
+.env
+.env.local
+.env.*.local
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.pem
+*.key
+.claude/
+CLAUDE.md
