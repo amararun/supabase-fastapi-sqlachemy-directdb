@@ -4,4 +4,4 @@ sqlalchemy
 psycopg2-binary
 python-dotenv
 slowapi
-tigzig-api-monitor>=1.4.0
+tigzig-api-monitor>=1.6.0
