@@ -31,6 +31,10 @@ curl "https://supabase.tigzig.com/sqlquery_alchemy/?sqlquery=SELECT%201%20as%20t
   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
+## Custom GPT Instructions
+
+`CUSTOM_GPT_APR2026.txt` is a reference system prompt for connecting a Custom GPT (or any LLM agent) to this backend as a SQL-query action. It covers execution behavior, response format, SQL rules, and column-level notes for the two sample tables (ODI cricket ball-by-ball and RBI bank-wise cards/ATM/POS statistics). Adapt the table sections to your own schema when reusing.
+
 ## Security Hardening
 
 | # | Layer | What It Does |
