@@ -5,3 +5,4 @@ psycopg2-binary
 python-dotenv
 slowapi
 tigzig-api-monitor>=1.6.0
+tigzig-concurrency>=0.1.0

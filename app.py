@@ -21,6 +21,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.exc import SQLAlchemyError
+from tigzig_concurrency import BoundedQueue
 
 try:
     from tigzig_api_monitor import APIMonitorMiddleware
@@ -58,11 +59,18 @@ DB_PASSWORD = parsed_url.password
 # Rate limiting and concurrency (all configurable via env vars)
 RATE_LIMIT = os.getenv("RATE_LIMIT", "30/minute")
 GLOBAL_RATE_LIMIT = os.getenv("GLOBAL_RATE_LIMIT", "200/minute")
-MAX_CONCURRENT_PER_IP = int(os.getenv("MAX_CONCURRENT_PER_IP", "3"))
-MAX_CONCURRENT_GLOBAL = int(os.getenv("MAX_CONCURRENT_GLOBAL", "6"))
 MAX_ROWS = int(os.getenv("MAX_ROWS", "1000"))
 
-logger.info(f"Rate limit: {RATE_LIMIT} | Global: {GLOBAL_RATE_LIMIT} | Concurrency: {MAX_CONCURRENT_PER_IP}/IP, {MAX_CONCURRENT_GLOBAL} global")
+# Bounded wait queue defaults (slow LLM-bound style: queries can run up to 30s
+# via psycopg2 statement_timeout; 10s wait keeps wait+work well under
+# Cloudflare's 100s edge cap). Override via env if needed.
+os.environ.setdefault("MAX_INFLIGHT_PER_IP", "3")
+os.environ.setdefault("MAX_INFLIGHT_GLOBAL", "8")
+os.environ.setdefault("MAX_QUEUE_PER_IP", "3")
+os.environ.setdefault("MAX_QUEUE_GLOBAL", "10")
+os.environ.setdefault("MAX_QUEUE_WAIT_SECONDS", "10")
+
+logger.info(f"Rate limit: {RATE_LIMIT} | Global: {GLOBAL_RATE_LIMIT}")
 
 # ---------------------------------------------------------------------------
 # Client IP extraction (Cloudflare-aware)
@@ -86,50 +94,24 @@ def verify_bearer_auth(request: Request):
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 # ---------------------------------------------------------------------------
-# Concurrency tracking (per-IP + global with asyncio.shield)
+# Concurrency: bounded wait queue (tigzig-concurrency package)
 # ---------------------------------------------------------------------------
-_active_queries: Dict[str, int] = {}
-_active_queries_lock = asyncio.Lock()
-_global_active = 0
-_global_active_lock = asyncio.Lock()
+_queue = BoundedQueue.from_env(name="supabase-fastapi")
 
 
-async def check_concurrency(client_ip: str):
-    global _global_active
-    async with _global_active_lock:
-        if _global_active >= MAX_CONCURRENT_GLOBAL:
-            logger.info(f"Concurrency DENIED (global cap {MAX_CONCURRENT_GLOBAL}) for {client_ip}")
-            raise HTTPException(status_code=503, detail="Server busy. Please try again later.")
-        _global_active += 1
-    async with _active_queries_lock:
-        current = _active_queries.get(client_ip, 0)
-        if current >= MAX_CONCURRENT_PER_IP:
-            async with _global_active_lock:
-                _global_active -= 1
-            logger.info(f"Concurrency DENIED (per-IP cap {MAX_CONCURRENT_PER_IP}) for {client_ip}")
-            raise HTTPException(status_code=429, detail="Too many concurrent requests.")
-        _active_queries[client_ip] = current + 1
-    logger.info(f"Concurrency ACQUIRED for {client_ip} | ip={current + 1}, global={_global_active}")
+async def check_concurrency(client_ip: str) -> None:
+    """Acquire a concurrency slot. Raises HTTPException 429/503 when busy."""
+    await _queue.acquire(client_ip)
 
 
-async def release_concurrency(client_ip: str):
+async def release_concurrency(client_ip: str) -> None:
+    """Release a concurrency slot. Shielded from cancellation."""
     try:
-        await asyncio.shield(_release_concurrency_inner(client_ip))
+        async def _release():
+            _queue.release(client_ip)
+        await asyncio.shield(_release())
     except asyncio.CancelledError:
         pass
-
-
-async def _release_concurrency_inner(client_ip: str):
-    global _global_active
-    async with _active_queries_lock:
-        current = _active_queries.get(client_ip, 0)
-        if current <= 1:
-            _active_queries.pop(client_ip, None)
-        else:
-            _active_queries[client_ip] = current - 1
-    async with _global_active_lock:
-        _global_active = max(0, _global_active - 1)
-    logger.info(f"Concurrency RELEASED for {client_ip} | ip={max(0, current - 1)}, global={_global_active}")
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +276,55 @@ def set_session_readonly(dbapi_connection, connection_record):
 
 
 # ---------------------------------------------------------------------------
+# Sync DB workers (run inside asyncio.to_thread so the event loop stays free
+# for /health and other endpoints during query execution).
+# ---------------------------------------------------------------------------
+def _run_alchemy_query(sqlquery: str) -> Any:
+    with engine.connect() as connection:
+        trans = connection.begin()
+        try:
+            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+            result = connection.execute(text(sqlquery))
+            if sqlquery.strip().lower().startswith("select") or sqlquery.strip().lower().startswith("with"):
+                columns = result.keys()
+                rows = result.fetchall()
+                results = [dict(zip(columns, row)) for row in rows]
+                trans.commit()
+                return results
+            trans.commit()
+            return {"status": "success", "message": "Query executed successfully"}
+        except:
+            trans.rollback()
+            raise
+
+
+def _run_psycopg2_query(sqlquery: str) -> Any:
+    connection = None
+    try:
+        connection = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            cursor_factory=RealDictCursor,
+            connect_timeout=10,
+            options="-c statement_timeout=30000",
+        )
+        connection.set_session(readonly=True, autocommit=False)
+        with connection.cursor() as cursor:
+            cursor.execute(sqlquery)
+            if sqlquery.strip().lower().startswith("select") or sqlquery.strip().lower().startswith("with"):
+                results = cursor.fetchall()
+                return list(results)
+            connection.commit()
+            return {"status": "success", "message": "Query executed successfully"}
+    finally:
+        if connection:
+            connection.close()
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/sqlquery_alchemy/")
@@ -315,25 +346,7 @@ async def sqlquery_alchemy(sqlquery: str, request: Request) -> Any:
 
     await check_concurrency(client_ip)
     try:
-        with engine.connect() as connection:
-            trans = connection.begin()
-            try:
-                connection.exec_driver_sql("SET TRANSACTION READ ONLY")
-                result = connection.execute(text(sqlquery))
-
-                if sqlquery.strip().lower().startswith('select') or sqlquery.strip().lower().startswith('with'):
-                    columns = result.keys()
-                    rows = result.fetchall()
-                    results = [dict(zip(columns, row)) for row in rows]
-                    trans.commit()
-                    return results
-                else:
-                    trans.commit()
-                    return {"status": "success", "message": "Query executed successfully"}
-            except:
-                trans.rollback()
-                raise
-
+        return await asyncio.to_thread(_run_alchemy_query, sqlquery)
     except HTTPException:
         raise
     except SQLAlchemyError as e:
@@ -364,30 +377,8 @@ async def sqlquery_direct(sqlquery: str, request: Request) -> Any:
     sqlquery = ensure_limit(sqlquery, MAX_ROWS)
 
     await check_concurrency(client_ip)
-    connection = None
     try:
-        connection = psycopg2.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            cursor_factory=RealDictCursor,
-            connect_timeout=10,
-            options="-c statement_timeout=30000"
-        )
-        connection.set_session(readonly=True, autocommit=False)
-
-        with connection.cursor() as cursor:
-            cursor.execute(sqlquery)
-
-            if sqlquery.strip().lower().startswith('select') or sqlquery.strip().lower().startswith('with'):
-                results = cursor.fetchall()
-                return list(results)
-            else:
-                connection.commit()
-                return {"status": "success", "message": "Query executed successfully"}
-
+        return await asyncio.to_thread(_run_psycopg2_query, sqlquery)
     except HTTPException:
         raise
     except psycopg2.Error as e:
@@ -397,8 +388,6 @@ async def sqlquery_direct(sqlquery: str, request: Request) -> Any:
         logger.error(f"Unexpected error in direct endpoint from {client_ip}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
-        if connection:
-            connection.close()
         await release_concurrency(client_ip)
 
 
