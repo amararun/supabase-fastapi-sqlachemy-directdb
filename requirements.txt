@@ -1,8 +1,39 @@
-fastapi
-uvicorn
-sqlalchemy
-psycopg2-binary
-python-dotenv
-slowapi
-tigzig-api-monitor>=1.6.0
-tigzig-concurrency>=0.1.0
+# ============================================================
+# FULLY PINNED DEPENDENCY LOCK (direct + transitive)
+# ============================================================
+# Pinned 2026-05-31 to the EXACT versions running in production
+# (captured via `pip freeze` from the live container) to make rebuilds
+# deterministic and stop pip from auto-pulling a newer - potentially
+# supply-chain-compromised - release on redeploy or host restart.
+#
+# To refresh deliberately: bump in a test build, run `pip freeze`, replace
+# this file, redeploy, verify. Do NOT loosen to >= - that reopens the
+# supply-chain exposure this lock exists to close.
+# ============================================================
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.4.22
+click==8.3.3
+Deprecated==1.3.1
+fastapi==0.136.1
+greenlet==3.5.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.13
+limits==5.8.0
+packaging==26.2
+psycopg2-binary==2.9.12
+pydantic==2.13.3
+pydantic_core==2.46.3
+python-dotenv==1.2.2
+slowapi==0.1.9
+SQLAlchemy==2.0.49
+starlette==1.0.0
+tigzig-api-monitor==1.7.0
+tigzig-concurrency==0.1.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+uvicorn==0.46.0
+wrapt==2.1.2
